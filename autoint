@@ -1,0 +1,60 @@
+# -*- coding: utf-8 -*-
+import sys
+import logging
+import tensorflow as tf
+from tensorflow.keras.layers import Flatten
+from .base_model import BaseModel
+
+from .common_module.interacting_layer import InteractingLayer
+from .common_module.multi_dense_layer import MultiLayerDense
+
+class AutoInt(BaseModel):
+    def __init__(self, model_config, **kwargs):
+        super(AutoInt, self).__init__(model_config,  **kwargs)
+
+    def output_layer(self, output):
+        return super(AutoInt, self).output_layer(output)
+
+    def model_layer(self):
+        logging.info("enter model layer============")
+
+        # 所有inputs的feature embedding concat
+        emb_3d_inputs = []
+        for emb in self.emb_structure_input:
+            emb_3d_inputs.append(emb[:, tf.newaxis, :])
+
+        all_inputs = tf.keras.layers.Concatenate(name='concat', axis=1)(emb_3d_inputs)
+
+        # model structure
+        ## autoint
+        autoint_outputs = InteractingLayer(layer_num=self.model_config['model_param']['interact']['layer_num'],
+                                           unit_num=self.model_config['model_param']['interact']['unit_num'],
+                                           head_num=self.model_config['model_param']['interact']['head_num'],
+                                           use_dropout=self.model_config['model_param']['interact']['use_dropout'],
+                                           dropout_rate=self.model_config['model_param']['interact']['dropout_rate'],
+                                           use_res=self.model_config['model_param']['interact']['use_res'])(all_inputs)
+        autoint_outputs = Flatten()(autoint_outputs)
+
+        # deep
+        deep_result = Flatten()(all_inputs)
+        deep_result = MultiLayerDense(units=self.model_config['model_param']['mlp']['hidden_units'],
+                                      activation=self.model_config['model_param']['mlp']['activation'])(deep_result)
+        logging.info('deep_result={}'.format(deep_result))
+
+        # concat autoint and deep
+        result = tf.concat([deep_result, autoint_outputs], axis=1)
+        logging.info('result={}'.format(result))
+
+        # output mlp
+        output = MultiLayerDense(units=self.model_config['model_param']['logits']['hidden_units'],
+                                 activation=self.model_config['model_param']['logits']['activation'])(result)
+
+        output = tf.clip_by_value(output, 1e-6, 1.0)
+        # 在线需要通过tensor name获取output，将output的tensor name重新命名一下，重命名与label的名字保持一致
+        output = tf.identity(output, name="video_id_rank_skip_model")
+        logging.info('logits output={}'.format(output))
+        self.output = output
+
+    def run(self):
+        self.model_layer()
+        return self.output_layer(self.output)
